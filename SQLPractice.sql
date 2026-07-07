@@ -126,3 +126,56 @@ SELECT city FROM student
 GROUP BY city;
 
 SELECT * FROM student;
+
+
+CREATE TABLE Students (
+    student_id INT,
+    name VARCHAR(50),
+    course_id INT
+);
+
+INSERT INTO Students VALUES
+(1,'Divyansh',101),
+(2,'Rahul',102),
+(3,'Anjali',103),
+(4,'Priya',104);
+
+CREATE TABLE Courses (
+    course_id INT,
+    course_name VARCHAR(50)
+);
+
+INSERT INTO Courses VALUES
+(101,'CSE'),
+(102,'IT'),
+(103,'ECE'),
+(105,'Mechanical');
+
+SELECT Students.name, Courses.course_name
+FROM Students
+INNER JOIN Courses
+ON Students.course_id = Courses.course_id;
+
+SELECT Students.name, Courses.course_name
+FROM Students
+LEFT JOIN Courses
+ON Students.course_id = Courses.course_id;
+
+SELECT Students.name, Courses.course_name
+FROM Students
+RIGHT JOIN Courses
+ON Students.course_id = Courses.course_id;
+
+SELECT Students.name, Courses.course_name
+FROM Students
+LEFT JOIN Courses
+ON Students.course_id = Courses.course_id
+UNION
+SELECT Students.name, Courses.course_name
+FROM Students
+RIGHT JOIN Courses
+ON Students.course_id = Courses.course_id;
+
+SELECT Students.name, Courses.course_name
+FROM Students
+CROSS JOIN Courses;
