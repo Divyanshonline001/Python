@@ -45,3 +45,17 @@ ENV/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# SQLite databases
+database.db
+*.db
+
+# Node dependencies
+node_modules/
+package.json
+package-lock.json
+
+# Tunnel temporary outputs
+*_output.txt
+*_output2.txt
+tunnel_url.txt
