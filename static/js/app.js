@@ -58,14 +58,58 @@ document.addEventListener('DOMContentLoaded', () => {
     // Toasts
     const toastContainer = document.getElementById('toastContainer');
 
+    // --- Auth DOM Elements ---
+    const sidebarAuthBtn = document.getElementById('sidebarAuthBtn');
+    const sidebarProfileCard = document.getElementById('sidebarProfileCard');
+    const profileUsername = document.getElementById('profileUsername');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const toggleLoginBtn = document.getElementById('toggleLoginBtn');
+    const toggleSignupBtn = document.getElementById('toggleSignupBtn');
+    const loginForm = document.getElementById('loginForm');
+    const signupForm = document.getElementById('signupForm');
+    const loginErrorBanner = document.getElementById('loginErrorBanner');
+    const signupErrorBanner = document.getElementById('signupErrorBanner');
+    
+    const loginUsernameInput = document.getElementById('loginUsername');
+    const loginPasswordInput = document.getElementById('loginPassword');
+    const signupUsernameInput = document.getElementById('signupUsername');
+    const signupPasswordInput = document.getElementById('signupPassword');
+    const signupPasswordConfirmInput = document.getElementById('signupPasswordConfirm');
+
     // --- State Variables ---
     let currentSummaryData = null;
     let loadingInterval = null;
     let historyList = [];
     let favoritesList = [];
+    let isLoggedIn = false;
+    let currentUser = null;
 
-    // --- 1. Load LocalStorage Caches ---
-    function loadCaches() {
+    // --- 1. Check Auth Status & Load Caches ---
+    async function checkAuthStatusAndLoad() {
+        try {
+            const res = await fetch('/api/auth/status');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.logged_in) {
+                    isLoggedIn = true;
+                    currentUser = data.username;
+                    updateAuthUI(true, data.username);
+                    await loadUserHistoryAndFavorites();
+                    return;
+                }
+            }
+        } catch (err) {
+            console.error('Auth check failed:', err);
+        }
+        
+        // Fallback to Guest Mode (LocalStorage)
+        isLoggedIn = false;
+        currentUser = null;
+        updateAuthUI(false);
+        loadLocalStorageCaches();
+    }
+
+    function loadLocalStorageCaches() {
         try {
             historyList = JSON.parse(localStorage.getItem('scribetube_history')) || [];
             favoritesList = JSON.parse(localStorage.getItem('scribetube_favorites')) || [];
@@ -77,6 +121,38 @@ document.addEventListener('DOMContentLoaded', () => {
         renderHistoryTab();
         renderFavoritesTab();
         renderSidebarRecentList();
+    }
+
+    async function loadUserHistoryAndFavorites() {
+        try {
+            const res = await fetch('/api/user/history');
+            if (res.ok) {
+                const data = await res.json();
+                historyList = data;
+                favoritesList = data.filter(item => item.is_favorite);
+            } else {
+                throw new Error('Failed to load user history');
+            }
+        } catch (err) {
+            console.error(err);
+            showToast('Failed to load history from database.', 'error');
+            loadLocalStorageCaches();
+            return;
+        }
+        renderHistoryTab();
+        renderFavoritesTab();
+        renderSidebarRecentList();
+    }
+
+    function updateAuthUI(loggedIn, username = '') {
+        if (loggedIn) {
+            if (sidebarAuthBtn) sidebarAuthBtn.classList.add('hidden');
+            if (sidebarProfileCard) sidebarProfileCard.classList.remove('hidden');
+            if (profileUsername) profileUsername.textContent = username;
+        } else {
+            if (sidebarAuthBtn) sidebarAuthBtn.classList.remove('hidden');
+            if (sidebarProfileCard) sidebarProfileCard.classList.add('hidden');
+        }
     }
 
     // --- 2. Theme Configuration ---
@@ -145,6 +221,199 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Scroll back to top on tab switch
         window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+
+    // --- 4b. Authentication & Data Syncing Event Listeners ---
+    
+    // Toggle between Sign In and Create Account forms
+    if (toggleLoginBtn && toggleSignupBtn) {
+        toggleLoginBtn.addEventListener('click', () => {
+            toggleLoginBtn.classList.add('active');
+            toggleSignupBtn.classList.remove('active');
+            loginForm.classList.remove('hidden');
+            loginForm.classList.add('active');
+            signupForm.classList.add('hidden');
+            signupForm.classList.remove('active');
+            loginErrorBanner.classList.add('hidden');
+            signupErrorBanner.classList.add('hidden');
+        });
+
+        toggleSignupBtn.addEventListener('click', () => {
+            toggleSignupBtn.classList.add('active');
+            toggleLoginBtn.classList.remove('active');
+            signupForm.classList.remove('hidden');
+            signupForm.classList.add('active');
+            loginForm.classList.add('hidden');
+            loginForm.classList.remove('active');
+            loginErrorBanner.classList.add('hidden');
+            signupErrorBanner.classList.add('hidden');
+        });
+    }
+
+    // Submit Login form
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = loginUsernameInput.value.trim();
+            const password = loginPasswordInput.value.trim();
+            
+            if (loginErrorBanner) loginErrorBanner.classList.add('hidden');
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    isLoggedIn = true;
+                    currentUser = data.username;
+                    updateAuthUI(true, data.username);
+                    showToast(`Welcome back, ${data.username}!`, 'success');
+                    
+                    loginUsernameInput.value = '';
+                    loginPasswordInput.value = '';
+                    
+                    // Sync local guest data to DB, then fetch updated list
+                    await syncLocalStorageToServer();
+                    await loadUserHistoryAndFavorites();
+                    
+                    switchTab('homeTab');
+                } else {
+                    if (loginErrorBanner) {
+                        loginErrorBanner.querySelector('.error-text').textContent = data.error || 'Invalid credentials.';
+                        loginErrorBanner.classList.remove('hidden');
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                if (loginErrorBanner) {
+                    loginErrorBanner.querySelector('.error-text').textContent = 'A connection error occurred.';
+                    loginErrorBanner.classList.remove('hidden');
+                }
+            }
+        });
+    }
+
+    // Submit Signup Form
+    if (signupForm) {
+        signupForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = signupUsernameInput.value.trim();
+            const password = signupPasswordInput.value.trim();
+            const confirmPassword = signupPasswordConfirmInput.value.trim();
+            
+            if (signupErrorBanner) signupErrorBanner.classList.add('hidden');
+            
+            if (password !== confirmPassword) {
+                if (signupErrorBanner) {
+                    signupErrorBanner.querySelector('.error-text').textContent = 'Passwords do not match.';
+                    signupErrorBanner.classList.remove('hidden');
+                }
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/auth/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    isLoggedIn = true;
+                    currentUser = data.username;
+                    updateAuthUI(true, data.username);
+                    showToast('Account created successfully!', 'success');
+                    
+                    signupUsernameInput.value = '';
+                    signupPasswordInput.value = '';
+                    signupPasswordConfirmInput.value = '';
+                    
+                    // Sync local guest data to DB, then fetch updated list
+                    await syncLocalStorageToServer();
+                    await loadUserHistoryAndFavorites();
+                    
+                    switchTab('homeTab');
+                } else {
+                    if (signupErrorBanner) {
+                        signupErrorBanner.querySelector('.error-text').textContent = data.error || 'Failed to create account.';
+                        signupErrorBanner.classList.remove('hidden');
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                if (signupErrorBanner) {
+                    signupErrorBanner.querySelector('.error-text').textContent = 'A connection error occurred.';
+                    signupErrorBanner.classList.remove('hidden');
+                }
+            }
+        });
+    }
+
+    // Logout Click
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            if (!confirm('Are you sure you want to sign out?')) return;
+            
+            try {
+                const res = await fetch('/api/auth/logout', { method: 'POST' });
+                if (res.ok) {
+                    isLoggedIn = false;
+                    currentUser = null;
+                    updateAuthUI(false);
+                    historyList = [];
+                    favoritesList = [];
+                    
+                    // Load local caches back (if any)
+                    loadLocalStorageCaches();
+                    
+                    showToast('Signed out successfully.', 'info');
+                    switchTab('homeTab');
+                }
+            } catch (err) {
+                console.error('Logout failed:', err);
+                showToast('Failed to sign out.', 'error');
+            }
+        });
+    }
+
+    // Synchronize localStorage history and favorites to the database
+    async function syncLocalStorageToServer() {
+        const guestHistory = JSON.parse(localStorage.getItem('scribetube_history')) || [];
+        const guestFavorites = JSON.parse(localStorage.getItem('scribetube_favorites')) || [];
+        
+        // Merge guestFavorites into guestHistory is_favorite flag
+        const mergedData = guestHistory.map(item => {
+            const isFav = guestFavorites.some(fav => fav.videoId === item.videoId);
+            return { ...item, is_favorite: isFav };
+        });
+        
+        // Add any favorites not in history
+        guestFavorites.forEach(fav => {
+            if (!mergedData.some(item => item.videoId === fav.videoId)) {
+                mergedData.push({ ...fav, is_favorite: true });
+            }
+        });
+        
+        if (mergedData.length === 0) return;
+        
+        try {
+            const res = await fetch('/api/user/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(mergedData)
+            });
+            if (res.ok) {
+                // Clear local caches since they are now merged in the DB
+                localStorage.removeItem('scribetube_history');
+                localStorage.removeItem('scribetube_favorites');
+                console.log('Guest history synchronized successfully.');
+            }
+        } catch (err) {
+            console.error('Failed to sync guest data:', err);
+        }
     }
 
     // --- 5. Check Backend API Configuration ---
@@ -274,27 +543,41 @@ document.addEventListener('DOMContentLoaded', () => {
     function saveToHistory(summaryItem) {
         // Prevent duplicate entries in history (removes old occurrences of the same video ID)
         historyList = historyList.filter(item => item.videoId !== summaryItem.videoId);
-        
-        // Add to front
         historyList.unshift(summaryItem);
         
-        localStorage.setItem('scribetube_history', JSON.stringify(historyList));
-        
-        // Re-render views
-        renderHistoryTab();
-        renderSidebarRecentList();
+        if (isLoggedIn) {
+            // Already saved to DB by Flask backend on API call.
+            // Just update client list and render.
+            renderHistoryTab();
+            renderSidebarRecentList();
+        } else {
+            localStorage.setItem('scribetube_history', JSON.stringify(historyList));
+            renderHistoryTab();
+            renderSidebarRecentList();
+        }
     }
 
-    function deleteFromHistory(videoId) {
+    async function deleteFromHistory(videoId) {
         historyList = historyList.filter(item => item.videoId !== videoId);
-        localStorage.setItem('scribetube_history', JSON.stringify(historyList));
+        
+        if (isLoggedIn) {
+            try {
+                const res = await fetch(`/api/user/history/${videoId}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Database delete failed');
+            } catch (err) {
+                console.error(err);
+                showToast('Failed to delete summary from cloud.', 'error');
+            }
+        } else {
+            localStorage.setItem('scribetube_history', JSON.stringify(historyList));
+        }
         
         renderHistoryTab();
         renderSidebarRecentList();
         showToast('Summary removed from history.', 'info');
     }
 
-    function clearAllHistory() {
+    async function clearAllHistory() {
         if (historyList.length === 0) {
             showToast('History is already empty.', 'info');
             return;
@@ -302,7 +585,18 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (confirm('Are you sure you want to clear all summarization history? (Your pinned favorites will remain intact)')) {
             historyList = [];
-            localStorage.setItem('scribetube_history', JSON.stringify(historyList));
+            
+            if (isLoggedIn) {
+                try {
+                    const res = await fetch('/api/user/history/clear', { method: 'POST' });
+                    if (!res.ok) throw new Error('Database clear failed');
+                } catch (err) {
+                    console.error(err);
+                    showToast('Failed to clear history from cloud.', 'error');
+                }
+            } else {
+                localStorage.setItem('scribetube_history', JSON.stringify(historyList));
+            }
             
             renderHistoryTab();
             renderSidebarRecentList();
@@ -313,29 +607,63 @@ document.addEventListener('DOMContentLoaded', () => {
     clearHistoryBtn.addEventListener('click', clearAllHistory);
 
     // --- 8. Star Favorite Summary Management ---
-    favoriteBtn.addEventListener('click', () => {
+    favoriteBtn.addEventListener('click', async () => {
         if (!currentSummaryData) return;
 
         const isStarred = favoriteBtn.classList.contains('starred');
         const videoId = currentSummaryData.videoId;
 
-        if (isStarred) {
-            // Unstar: Remove from favorites
-            favoritesList = favoritesList.filter(item => item.videoId !== videoId);
-            localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
-            
-            updateFavoriteBtnState(false);
-            renderFavoritesTab();
-            showToast('Removed from Favorites', 'info');
+        if (isLoggedIn) {
+            try {
+                const res = await fetch('/api/user/favorite/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videoId })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    
+                    if (data.is_favorite) {
+                        currentSummaryData.is_favorite = true;
+                        favoritesList = favoritesList.filter(item => item.videoId !== videoId);
+                        favoritesList.unshift({ ...currentSummaryData });
+                        
+                        updateFavoriteBtnState(true);
+                        showToast('Saved to Favorites!', 'success');
+                    } else {
+                        currentSummaryData.is_favorite = false;
+                        favoritesList = favoritesList.filter(item => item.videoId !== videoId);
+                        
+                        updateFavoriteBtnState(false);
+                        showToast('Removed from Favorites', 'info');
+                    }
+                    renderFavoritesTab();
+                } else {
+                    throw new Error('Database favorite toggle failed');
+                }
+            } catch (err) {
+                console.error(err);
+                showToast('Failed to save favorite to cloud.', 'error');
+            }
         } else {
-            // Star: Save full item details to favorites
-            const favItem = { ...currentSummaryData, timestamp: new Date().toISOString() };
-            favoritesList.unshift(favItem);
-            localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
-            
-            updateFavoriteBtnState(true);
-            renderFavoritesTab();
-            showToast('Saved to Favorites!', 'success');
+            if (isStarred) {
+                // Unstar: Remove from favorites
+                favoritesList = favoritesList.filter(item => item.videoId !== videoId);
+                localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
+                
+                updateFavoriteBtnState(false);
+                renderFavoritesTab();
+                showToast('Removed from Favorites', 'info');
+            } else {
+                // Star: Save full item details to favorites
+                const favItem = { ...currentSummaryData, timestamp: new Date().toISOString() };
+                favoritesList.unshift(favItem);
+                localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
+                
+                updateFavoriteBtnState(true);
+                renderFavoritesTab();
+                showToast('Saved to Favorites!', 'success');
+            }
         }
     });
 
@@ -354,9 +682,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function deleteFromFavorites(videoId) {
+    async function deleteFromFavorites(videoId) {
         favoritesList = favoritesList.filter(item => item.videoId !== videoId);
-        localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
+        
+        if (isLoggedIn) {
+            try {
+                const res = await fetch('/api/user/favorite/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videoId })
+                });
+                if (!res.ok) throw new Error('Database favorite delete failed');
+            } catch (err) {
+                console.error(err);
+                showToast('Failed to remove favorite from cloud.', 'error');
+            }
+        } else {
+            localStorage.setItem('scribetube_favorites', JSON.stringify(favoritesList));
+        }
         
         renderFavoritesTab();
         showToast('Removed from favorites.', 'info');
@@ -975,6 +1318,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 3700);
     }
 
-    // Initialize LocalStorage elements on boot
-    loadCaches();
+    // Initialize elements on boot
+    checkAuthStatusAndLoad();
 });

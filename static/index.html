@@ -44,6 +44,10 @@
                     <i class="fa-solid fa-star"></i>
                     <span>Favorites</span>
                 </a>
+                <a href="#" class="nav-item" data-tab="authTab" id="sidebarAuthBtn">
+                    <i class="fa-solid fa-user-lock"></i>
+                    <span>Sign In</span>
+                </a>
             </nav>
 
             <div class="sidebar-divider"></div>
@@ -59,6 +63,20 @@
 
             <!-- Sidebar Bottom Footer Controls -->
             <div class="sidebar-footer">
+                <!-- User Profile Card -->
+                <div class="sidebar-profile-card hidden" id="sidebarProfileCard">
+                    <div class="profile-avatar">
+                        <i class="fa-solid fa-user-astronaut"></i>
+                    </div>
+                    <div class="profile-info">
+                        <span class="profile-name" id="profileUsername">Guest</span>
+                        <span class="profile-status">Premium Account</span>
+                    </div>
+                    <button class="logout-btn" id="logoutBtn" title="Sign Out" aria-label="Sign Out">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </button>
+                </div>
+
                 <div class="theme-switch-wrapper">
                     <span class="switch-label">
                         <i class="fa-solid fa-circle-half-stroke"></i>
@@ -365,6 +383,94 @@
                     <div id="favoritesGrid" class="cards-grid">
                         <!-- Injected by JS: Starred cards list -->
                     </div>
+                </div>
+
+                <!-- Tab PANE 4: Auth (Login & Signup) -->
+                <div id="authTab" class="tab-content hidden">
+                    <section class="auth-section">
+                        <div class="glass-card auth-card">
+                            <div class="auth-header">
+                                <div class="auth-toggle-buttons">
+                                    <button class="auth-toggle-btn active" id="toggleLoginBtn">Sign In</button>
+                                    <button class="auth-toggle-btn" id="toggleSignupBtn">Create Account</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Login Form -->
+                            <form id="loginForm" class="auth-form active">
+                                <h2 class="auth-title">Welcome Back</h2>
+                                <p class="auth-subtitle">Sign in to save your summary history and access saved favorites on any device.</p>
+                                
+                                <div class="auth-error-banner hidden" id="loginErrorBanner">
+                                    <i class="fa-solid fa-circle-exclamation"></i>
+                                    <span class="error-text">Incorrect username or password.</span>
+                                </div>
+                                
+                                <div class="auth-input-group">
+                                    <label for="loginUsername">Username</label>
+                                    <div class="auth-input-wrapper">
+                                        <i class="fa-solid fa-user"></i>
+                                        <input type="text" id="loginUsername" placeholder="Enter username" required autocomplete="username">
+                                    </div>
+                                </div>
+                                
+                                <div class="auth-input-group">
+                                    <label for="loginPassword">Password</label>
+                                    <div class="auth-input-wrapper">
+                                        <i class="fa-solid fa-lock"></i>
+                                        <input type="password" id="loginPassword" placeholder="Enter password" required autocomplete="current-password">
+                                    </div>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary btn-block" id="loginSubmitBtn">
+                                    <span>Sign In</span>
+                                    <i class="fa-solid fa-right-to-bracket"></i>
+                                </button>
+                            </form>
+                            
+                            <!-- Signup Form -->
+                            <form id="signupForm" class="auth-form hidden">
+                                <h2 class="auth-title">Create Account</h2>
+                                <p class="auth-subtitle">Join ScribeTube to sync history, save unlimited favorites, and organize summaries.</p>
+                                
+                                <div class="auth-error-banner hidden" id="signupErrorBanner">
+                                    <i class="fa-solid fa-circle-exclamation"></i>
+                                    <span class="error-text">Username already exists.</span>
+                                </div>
+                                
+                                <div class="auth-input-group">
+                                    <label for="signupUsername">Username</label>
+                                    <div class="auth-input-wrapper">
+                                        <i class="fa-solid fa-user"></i>
+                                        <input type="text" id="signupUsername" placeholder="Choose a username" required minlength="3" autocomplete="username">
+                                    </div>
+                                    <small class="input-tip">Minimum 3 characters, letters, numbers, and underscores only.</small>
+                                </div>
+                                
+                                <div class="auth-input-group">
+                                    <label for="signupPassword">Password</label>
+                                    <div class="auth-input-wrapper">
+                                        <i class="fa-solid fa-lock"></i>
+                                        <input type="password" id="signupPassword" placeholder="Create a password" required minlength="6" autocomplete="new-password">
+                                    </div>
+                                    <small class="input-tip">Minimum 6 characters.</small>
+                                </div>
+                                
+                                <div class="auth-input-group">
+                                    <label for="signupPasswordConfirm">Confirm Password</label>
+                                    <div class="auth-input-wrapper">
+                                        <i class="fa-solid fa-lock-open"></i>
+                                        <input type="password" id="signupPasswordConfirm" placeholder="Confirm your password" required minlength="6" autocomplete="new-password">
+                                    </div>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary btn-block" id="signupSubmitBtn">
+                                    <span>Create Account</span>
+                                    <i class="fa-solid fa-user-plus"></i>
+                                </button>
+                            </form>
+                        </div>
+                    </section>
                 </div>
 
             </main>

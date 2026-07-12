@@ -3,10 +3,13 @@ import re
 import json
 import logging
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+import sqlite3
+import datetime
+from flask import Flask, request, jsonify, send_from_directory, session
 from dotenv import load_dotenv
 from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
+from werkzeug.security import generate_password_hash, check_password_hash
 
 def fetch_video_details(video_id):
     """
@@ -33,6 +36,57 @@ os.environ["GOOGLE_API_USE_CLIENT_CERTIFICATE"] = "false"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__, static_folder='static', static_url_path='')
+app.secret_key = os.getenv("SECRET_KEY", "scribetube-default-secret-key-12345")
+
+# Database setup
+def get_db_connection():
+    db_name = 'test_database.db' if app.config.get('TESTING') else 'database.db'
+    conn = sqlite3.connect(db_name)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # Create users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # Create summaries table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                video_id TEXT NOT NULL,
+                video_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                channel_name TEXT,
+                channel_url TEXT,
+                summary TEXT NOT NULL,
+                key_insights TEXT NOT NULL,
+                takeaway TEXT NOT NULL,
+                visual_elements TEXT,
+                timestamp TEXT NOT NULL,
+                is_favorite INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(user_id, video_id)
+            )
+        ''')
+        conn.commit()
+        logging.info("Database initialized successfully.")
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {str(e)}")
+    finally:
+        conn.close()
+
+# Initialize DB on load
+init_db()
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -284,6 +338,43 @@ Transcript text:
         summary_json["channelUrl"] = channel_url
         
         logging.info("Summary generated successfully.")
+
+        # Save to database if user is logged in
+        if 'user_id' in session:
+            conn = get_db_connection()
+            try:
+                cursor = conn.cursor()
+                timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+                cursor.execute('''
+                    INSERT INTO summaries 
+                    (user_id, video_id, video_url, title, channel_name, channel_url, summary, key_insights, takeaway, visual_elements, timestamp, is_favorite)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(user_id, video_id) DO UPDATE SET
+                        summary = excluded.summary,
+                        key_insights = excluded.key_insights,
+                        takeaway = excluded.takeaway,
+                        visual_elements = excluded.visual_elements,
+                        timestamp = excluded.timestamp
+                ''', (
+                    session['user_id'],
+                    video_id,
+                    summary_json["videoUrl"],
+                    summary_json["title"],
+                    summary_json["channelName"],
+                    summary_json["channelUrl"],
+                    summary_json["summary"],
+                    json.dumps(summary_json.get("key_points", [])),
+                    summary_json["takeaway"],
+                    json.dumps(summary_json.get("visual_elements")) if summary_json.get("visual_elements") else None,
+                    timestamp
+                ))
+                conn.commit()
+                summary_json["timestamp"] = timestamp
+            except Exception as e:
+                logging.error(f"Error saving generated summary to db: {str(e)}")
+            finally:
+                conn.close()
+
         return jsonify(summary_json)
         
     except json.JSONDecodeError as je:
@@ -292,6 +383,280 @@ Transcript text:
     except Exception as ge:
         logging.error(f"Gemini API error: {str(ge)}")
         return jsonify({"error": f"AI Summarization failed: {str(ge)}"}), 500
+
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    if 'user_id' in session:
+        return jsonify({
+            "logged_in": True,
+            "username": session.get('username'),
+            "user_id": session.get('user_id')
+        })
+    return jsonify({"logged_in": False})
+
+@app.route('/api/auth/signup', methods=['POST'])
+def auth_signup():
+    data = request.get_json() or {}
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+        
+    if len(username) < 3:
+        return jsonify({"error": "Username must be at least 3 characters long."}), 400
+        
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long."}), 400
+        
+    if not re.match(r'^[a-zA-Z0-9_]+$', username):
+        return jsonify({"error": "Username can only contain letters, numbers, and underscores."}), 400
+
+    conn = get_db_connection()
+    try:
+        password_hash = generate_password_hash(password)
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+            (username, password_hash)
+        )
+        conn.commit()
+        
+        # Get user details to log them in automatically
+        cursor.execute('SELECT id, username FROM users WHERE username = ?', (username,))
+        user = cursor.fetchone()
+        
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        
+        return jsonify({
+            "success": True,
+            "message": "User registered successfully.",
+            "username": user['username']
+        }), 201
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Username is already taken."}), 400
+    except Exception as e:
+        logging.error(f"Signup error: {str(e)}")
+        return jsonify({"error": "An error occurred during registration. Please try again."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.get_json() or {}
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        user = cursor.fetchone()
+        
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            return jsonify({
+                "success": True,
+                "message": "Logged in successfully.",
+                "username": user['username']
+            })
+        else:
+            return jsonify({"error": "Invalid username or password."}), 401
+    except Exception as e:
+        logging.error(f"Login error: {str(e)}")
+        return jsonify({"error": "An error occurred during login."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.pop('user_id', None)
+    session.pop('username', None)
+    return jsonify({"success": True, "message": "Logged out successfully."})
+
+@app.route('/api/user/history', methods=['GET'])
+def user_history():
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required."}), 401
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT * FROM summaries WHERE user_id = ? ORDER BY timestamp DESC',
+            (session['user_id'],)
+        )
+        rows = cursor.fetchall()
+        
+        history = []
+        for row in rows:
+            try:
+                key_insights = json.loads(row['key_insights'])
+            except Exception:
+                key_insights = []
+            
+            visual_elements = None
+            if row['visual_elements']:
+                try:
+                    visual_elements = json.loads(row['visual_elements'])
+                except Exception:
+                    pass
+                    
+            history.append({
+                "videoId": row['video_id'],
+                "videoUrl": row['video_url'],
+                "title": row['title'],
+                "channelName": row['channel_name'],
+                "channelUrl": row['channel_url'],
+                "summary": row['summary'],
+                "key_points": key_insights,
+                "takeaway": row['takeaway'],
+                "visual_elements": visual_elements,
+                "timestamp": row['timestamp'],
+                "is_favorite": bool(row['is_favorite'])
+            })
+        return jsonify(history)
+    except Exception as e:
+        logging.error(f"Failed to fetch user history: {str(e)}")
+        return jsonify({"error": "Failed to retrieve history."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/sync', methods=['POST'])
+def user_sync():
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required."}), 401
+        
+    data = request.get_json() or []
+    if not isinstance(data, list):
+        return jsonify({"error": "Invalid data format. Expected a list."}), 400
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        user_id = session['user_id']
+        
+        for item in data:
+            video_id = item.get('videoId')
+            video_url = item.get('videoUrl', f"https://www.youtube.com/watch?v={video_id}")
+            title = item.get('title', 'YouTube Video')
+            channel_name = item.get('channelName')
+            channel_url = item.get('channelUrl')
+            summary = item.get('summary', '')
+            key_points = json.dumps(item.get('key_points', []))
+            takeaway = item.get('takeaway', '')
+            visual_elements = json.dumps(item.get('visual_elements')) if item.get('visual_elements') else None
+            timestamp = item.get('timestamp', '')
+            is_favorite = 1 if item.get('is_favorite') else 0
+            
+            if not video_id or not summary:
+                continue
+                
+            cursor.execute('''
+                INSERT INTO summaries 
+                (user_id, video_id, video_url, title, channel_name, channel_url, summary, key_insights, takeaway, visual_elements, timestamp, is_favorite)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, video_id) DO UPDATE SET
+                    is_favorite = MAX(is_favorite, excluded.is_favorite),
+                    timestamp = CASE WHEN timestamp < excluded.timestamp THEN excluded.timestamp ELSE timestamp END
+            ''', (user_id, video_id, video_url, title, channel_name, channel_url, summary, key_points, takeaway, visual_elements, timestamp, is_favorite))
+            
+        conn.commit()
+        return jsonify({"success": True, "message": "Data synchronized successfully."})
+    except Exception as e:
+        logging.error(f"Sync error: {str(e)}")
+        return jsonify({"error": "Failed to sync local data."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/favorite/toggle', methods=['POST'])
+def favorite_toggle():
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required."}), 401
+        
+    data = request.get_json() or {}
+    video_id = data.get('videoId')
+    
+    if not video_id:
+        return jsonify({"error": "Video ID is required."}), 400
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        user_id = session['user_id']
+        
+        # Check if the summary exists for the user
+        cursor.execute(
+            'SELECT is_favorite FROM summaries WHERE user_id = ? AND video_id = ?',
+            (user_id, video_id)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return jsonify({"error": "Summary not found in history."}), 404
+            
+        new_fav = 0 if row['is_favorite'] else 1
+        cursor.execute(
+            'UPDATE summaries SET is_favorite = ? WHERE user_id = ? AND video_id = ?',
+            (new_fav, user_id, video_id)
+        )
+        conn.commit()
+        
+        return jsonify({
+            "success": True,
+            "is_favorite": bool(new_fav),
+            "message": "Favorite toggled successfully."
+        })
+    except Exception as e:
+        logging.error(f"Favorite toggle error: {str(e)}")
+        return jsonify({"error": "Failed to toggle favorite."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/history/<video_id>', methods=['DELETE'])
+def delete_summary(video_id):
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required."}), 401
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM summaries WHERE user_id = ? AND video_id = ?',
+            (session['user_id'], video_id)
+        )
+        conn.commit()
+        return jsonify({"success": True, "message": "Summary deleted successfully."})
+    except Exception as e:
+        logging.error(f"Delete summary error: {str(e)}")
+        return jsonify({"error": "Failed to delete summary."}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/history/clear', methods=['POST'])
+def clear_user_history():
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required."}), 401
+        
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM summaries WHERE user_id = ?',
+            (session['user_id'],)
+        )
+        conn.commit()
+        return jsonify({"success": True, "message": "History cleared successfully."})
+    except Exception as e:
+        logging.error(f"Clear history error: {str(e)}")
+        return jsonify({"error": "Failed to clear history."}), 500
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     # Get port from environment or default to 5000

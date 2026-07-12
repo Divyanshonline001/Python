@@ -7,6 +7,10 @@ from app import app, extract_video_id
 class YouTubeSummarizerTestCase(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
+        # Initialize the database file for test context
+        from app import init_db
+        init_db()
+        
         self.client = app.test_client()
         self.old_key = os.environ.get("GEMINI_API_KEY")
         os.environ["GEMINI_API_KEY"] = "mock_api_key"
@@ -16,6 +20,13 @@ class YouTubeSummarizerTestCase(unittest.TestCase):
             os.environ["GEMINI_API_KEY"] = self.old_key
         else:
             os.environ.pop("GEMINI_API_KEY", None)
+            
+        # Remove testing database
+        if os.path.exists("test_database.db"):
+            try:
+                os.remove("test_database.db")
+            except Exception:
+                pass
 
     def test_extract_video_id(self):
         """Test robust YouTube video ID extraction."""
@@ -105,6 +116,111 @@ class YouTubeSummarizerTestCase(unittest.TestCase):
         self.assertEqual(data["summary"], "This is a mock AI summary.")
         self.assertEqual(len(data["key_points"]), 2)
         self.assertEqual(data["takeaway"], "This is a mock final takeaway.")
+
+    def test_signup_success(self):
+        """Test user signup is successful."""
+        response = self.client.post('/api/auth/signup',
+                                    data=json.dumps({"username": "testuser", "password": "password123"}),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 201)
+        data = json.loads(response.data)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["username"], "testuser")
+
+    def test_signup_duplicate(self):
+        """Test signup returns error for duplicate username."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        response = self.client.post('/api/auth/signup',
+                                    data=json.dumps({"username": "testuser", "password": "differentpassword"}),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        data = json.loads(response.data)
+        self.assertIn("error", data)
+
+    def test_login_success(self):
+        """Test login is successful with valid credentials."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        response = self.client.post('/api/auth/login',
+                                    data=json.dumps({"username": "testuser", "password": "password123"}),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertTrue(data["success"])
+
+    def test_login_failure(self):
+        """Test login fails with invalid credentials."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        response = self.client.post('/api/auth/login',
+                                    data=json.dumps({"username": "testuser", "password": "badpassword"}),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 401)
+
+    def test_auth_status_logged_in(self):
+        """Test auth status endpoints when logged in."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        response = self.client.get('/api/auth/status')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertTrue(data["logged_in"])
+        self.assertEqual(data["username"], "testuser")
+
+    def test_auth_status_guest(self):
+        """Test auth status when not logged in."""
+        response = self.client.get('/api/auth/status')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertFalse(data["logged_in"])
+
+    def test_logout(self):
+        """Test logging out clears the session."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        response = self.client.post('/api/auth/logout')
+        self.assertEqual(response.status_code, 200)
+        
+        response = self.client.get('/api/auth/status')
+        data = json.loads(response.data)
+        self.assertFalse(data["logged_in"])
+
+    def test_sync_history(self):
+        """Test history synchronization merges guest history."""
+        self.client.post('/api/auth/signup',
+                         data=json.dumps({"username": "testuser", "password": "password123"}),
+                         content_type='application/json')
+        
+        mock_sync_data = [
+            {
+                "videoId": "abc123xyz77",
+                "videoUrl": "https://www.youtube.com/watch?v=abc123xyz77",
+                "title": "Guest Video 1",
+                "summary": "Mock summary content",
+                "key_points": ["Point 1", "Point 2"],
+                "takeaway": "Takeaway 1",
+                "timestamp": "2026-07-12T12:00:00.000Z",
+                "is_favorite": True
+            }
+        ]
+        
+        response = self.client.post('/api/user/sync',
+                                    data=json.dumps(mock_sync_data),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        
+        response = self.client.get('/api/user/history')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["videoId"], "abc123xyz77")
+        self.assertTrue(data[0]["is_favorite"])
 
 if __name__ == '__main__':
     unittest.main()
